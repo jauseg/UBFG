@@ -11,6 +11,7 @@
 #include <QTime>
 #include <stdio.h>
 #include <math.h>
+#include <limits>
 
 FontRender::FontRender(Ui_MainWindow *_ui) : ui(_ui)
 {}
@@ -29,28 +30,29 @@ struct Point
 
 struct Grid
 {
-    Point grid[HEIGHT][WIDTH];
+    int w, h;
+    Point *grid;
 };
 
 Point pointInside = { 0, 0, 0 };
 Point pointEmpty = { 9999, 9999, 9999*9999 };
 Grid grid[2];
 
-static inline Point Get(Grid &g, int x, int y, int maxW, int maxH)
+static inline Point Get(Grid &g, int x, int y)
 {
-    return g.grid[y][x];
+    return g.grid[y * (g.w + 2) + x];
 }
 
-static inline void Put( Grid &g, int x, int y, const Point &p )
+static inline void Put(Grid &g, int x, int y, const Point &p)
 {
-    g.grid[y][x] = p;
+    g.grid[y * (g.w + 2) + x] = p;
 }
 
 /* macro is a way faster than inline */
 #define Compare(offsetx, offsety)                                              \
 do {                                                                           \
     int add;                                                                   \
-    Point other = Get(g, x + offsetx, y + offsety, maxW, maxH);                \
+    Point other = Get(g, x + offsetx, y + offsety);                            \
     if(offsety == 0) {                                                         \
         add = 2 * other.dx + 1;                                                \
     }                                                                          \
@@ -79,13 +81,13 @@ do {                                                                           \
     }                                                                          \
 } while(0)
 
-static void GenerateSDF(Grid &g, int maxW, int maxH)
+static void GenerateSDF(Grid &g)
 {
-    for (int y = 1; y <= maxH;y++)
+    for (int y = 1; y <= g.h; y++)
     {
-        for (int x = 1; x <= maxW;x++)
+        for (int x = 1; x <= g.w; x++)
         {
-            Point p = Get(g, x, y, maxW, maxH);
+            Point p = Get(g, x, y);
             Compare(-1,  0);
             Compare( 0, -1);
             Compare(-1, -1);
@@ -94,11 +96,11 @@ static void GenerateSDF(Grid &g, int maxW, int maxH)
         }
     }
 
-    for(int y = maxH; y > 0; y--)
+    for(int y = g.h; y > 0; y--)
     {
-        for(int x = maxW; x > 0; x--)
+        for(int x = g.w; x > 0; x--)
         {
-            Point p = Get(g, x, y, maxW, maxH);
+            Point p = Get(g, x, y);
             Compare( 1,  0);
             Compare( 0,  1);
             Compare(-1,  1);
@@ -111,18 +113,22 @@ static void GenerateSDF(Grid &g, int maxW, int maxH)
 static void dfcalculate(QImage *img, int distanceFieldScale, bool transparent)
 {
     int x, y;
-    int maxW = img->width(), maxH = img->height();
+    int w = img->width(), h = img->height();
+    grid[0].w = grid[1].w = w;
+    grid[0].h = grid[1].h = h;
+    grid[0].grid = (Point*)malloc(sizeof(Point) * (w + 2) * (h + 2));
+    grid[1].grid = (Point*)malloc(sizeof(Point) * (w + 2) * (h + 2));
     /* create 1-pixel gap */
-    for(x = 0; x < maxW+2; x++)
+    for(x = 0; x < w + 2; x++)
     {
         Put(grid[0], x, 0, pointInside);
         Put(grid[1], x, 0, pointEmpty);
     }
-    for(y = 1; y <= maxH; y++)
+    for(y = 1; y <= h; y++)
     {
         Put(grid[0], 0, y, pointInside);
         Put(grid[1], 0, y, pointEmpty);
-        for(x = 1; x <= maxW; x++)
+        for(x = 1; x <= w; x++)
         {
             if(qGreen(img->pixel(x - 1, y - 1)) > 128)
             {
@@ -135,43 +141,46 @@ static void dfcalculate(QImage *img, int distanceFieldScale, bool transparent)
                 Put(grid[1], x, y, pointEmpty);
             }
         }
-        Put(grid[0], maxW + 1, y, pointInside);
-        Put(grid[1], maxW + 1, y, pointEmpty);
+        Put(grid[0], w + 1, y, pointInside);
+        Put(grid[1], w + 1, y, pointEmpty);
     }
-    for(x = 0; x < maxW + 2; x++)
+    for(x = 0; x < w + 2; x++)
     {
-        Put(grid[0], x, maxH + 1, pointInside);
-        Put(grid[1], x, maxH + 1, pointEmpty);
+        Put(grid[0], x, h + 1, pointInside);
+        Put(grid[1], x, h + 1, pointEmpty);
     }
-    GenerateSDF(grid[0], maxW, maxH);
-    GenerateSDF(grid[1], maxW, maxH);
-    for(y = 1; y <= maxH; y++)
-        for(x = 1; x <= maxW; x++)
+    GenerateSDF(grid[0]);
+    GenerateSDF(grid[1]);
+    for(y = 1; y <= h; y++)
+        for(x = 1; x <= w; x++)
         {
-            double dist1 = sqrt((double)(Get(grid[0], x, y, maxW, maxH ).f + 1));
-            double dist2 = sqrt((double)(Get(grid[1], x, y, maxW, maxH ).f + 1));
+            double dist1 = sqrt((double)(Get(grid[0], x, y).f + 1));
+            double dist2 = sqrt((double)(Get(grid[1], x, y).f + 1));
             double dist = dist1 - dist2;
             // Clamp and scale
-            int c = dist * 64 / distanceFieldScale + 128;
-            if ( c < 0 ) c = 0;
-            if ( c > 255 ) c = 255;
+            int c = dist + 128;
+            if(c < 0) c = 0;
+            if(c > 255) c = 255;
             if(transparent)
                 img->setPixel(x - 1, y - 1, qRgba(255,255,255,c));
             else
                 img->setPixel(x - 1, y - 1, qRgb(c,c,c));
         }
+    free(grid[0].grid);
+    free(grid[1].grid);
 }
 
 void FontRender::run()
 {
-    // QTime myTimer;
-    // myTimer.start();
+    QTime myTimer;
+    myTimer.start();
     done = false;
     QList<FontRec> fontLst;
     QList<packedImage> glyphLst;
     int i, k, base;
     uint width, height;
     QImage::Format baseTxtrFormat;
+    QImage::Format glyphTxtrFormat;
     QString charList = ui->plainTextEdit->toPlainText();
     packer.sortOrder = ui->sortOrder->currentIndex();
     packer.borderTop = ui->borderTop->value();
@@ -188,13 +197,23 @@ void FontRender::run()
     {
         distanceField = true;
         baseTxtrFormat = QImage::Format_ARGB32;
+        glyphTxtrFormat= QImage::Format_ARGB32;
+    }
+    else if (Qt::Checked == ui->transparent->checkState())
+    {
+        distanceField = false;
+        baseTxtrFormat = QImage::Format_ARGB32_Premultiplied;
+        glyphTxtrFormat= QImage::Format_ARGB32_Premultiplied;
     }
     else
     {
         distanceField = false;
-        baseTxtrFormat = QImage::Format_ARGB32_Premultiplied;
+        baseTxtrFormat = QImage::Format_RGB32;
+        glyphTxtrFormat= QImage::Format_ARGB32_Premultiplied;
     }
-    int distanceFieldScale = 8;
+    int distanceFieldScale = 4;
+    if(exporting)
+        distanceFieldScale *= 4;
     if(!distanceField)
         distanceFieldScale = 1;
     for(k = 0; k < ui->listOfFonts->count(); k++)
@@ -235,21 +254,15 @@ void FontRender::run()
             QSize charSize = fontMetrics.size(0, charFirst);
             packed_image.charWidth = fontMetrics.width(charFirst) / distanceFieldScale;
             int firstBearing = fontMetrics.leftBearing(charFirst);
-//            firstBearing = firstBearing > 0 ? 0 : firstBearing;
             packed_image.bearing = firstBearing / distanceFieldScale;
-//            qDebug() << fontMetrics.leftBearing(charFirst) << charFirst;
             width = charSize.width() - firstBearing;
             if(exporting && ui->exportKerning->isChecked())
             {
                 for (int j = 0; j < charList.size(); ++j)
                 {
                     QChar charSecond = charList.at(j);
-//                    int secondBearing = fontMetrics.leftBearing(charSecond);
-//                    secondBearing = secondBearing > 0 ? 0 : secondBearing;
-//                    int widthAll = charSize.width() + fontMetrics.size(0, charSecond).width() - secondBearing;
                     int widthAll = fontMetrics.width(charFirst) + fontMetrics.width(charSecond);
                     QString kernPair(QString(charFirst) + QString(charSecond));
-//                    float kerning = (float)(fontMetrics.size(0, kernPair).width() - widthAll) / (float)distanceFieldScale;
                     float kerning = (float)(fontMetrics.width(kernPair) - widthAll) / (float)distanceFieldScale;
                     if(kerning != 0)
                     {
@@ -263,29 +276,25 @@ void FontRender::run()
             QImage buffer;
             if(distanceField)
             {
-                buffer = QImage(width, height, baseTxtrFormat);
+                buffer = QImage(width, height, glyphTxtrFormat);
                 buffer.fill(Qt::transparent);
             }
             else
             {
-                packed_image.img = QImage(width, height, baseTxtrFormat);
+                packed_image.img = QImage(width, height, glyphTxtrFormat);
                 packed_image.img.fill(Qt::transparent);
             }
 
             packed_image.ch = charFirst;
             QPainter painter(distanceField ? &buffer : &packed_image.img);
             painter.setFont(font);
-            if(exporting)
-                painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
-            else
-                painter.fillRect(0, 0, width, height,
-                                 ui->transparent->isEnabled() && ui->transparent->isChecked() ? Qt::black : bkgColor);
+            painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
+            //painter.setCompositionMode(QPainter::CompositionMode_Source);
             painter.setPen(fontColor);
             painter.drawText(-firstBearing, base, charFirst);
             if(distanceField)
             {
                 dfcalculate(&buffer, distanceFieldScale, exporting && ui->transparent->isEnabled() && ui->transparent->isChecked());
-                // buffer.save(charList.at(i), "PNG");
                 packed_image.img = buffer.scaled(buffer.size() / distanceFieldScale);
             }
             packed_image.crop = packed_image.img.rect();
@@ -301,7 +310,7 @@ void FontRender::run()
     points = packer.pack(&glyphLst, ui->comboHeuristic->currentIndex(), width, height);
     QImage texture(width, height, baseTxtrFormat);
     texture.fill(bkgColor.rgba());
-    QPainter p(&texture);
+    QPainter p;
     if(exporting)
     {
         // Some sort of unicode hack...
@@ -310,23 +319,32 @@ void FontRender::run()
         else
             pCodec = QTextCodec::codecForName(ui->encoding->currentText().toLatin1());
         // draw glyphs
-        if(!ui->transparent->isChecked() || ui->transparent->isEnabled())
+        p.begin(&texture);
+        if(!ui->transparent->isChecked() || !ui->transparent->isEnabled())
             p.fillRect(0,0,texture.width(),texture.height(), bkgColor);
         for (i = 0; i < glyphLst.size(); ++i)
             if(glyphLst.at(i).merged == false)
-                    p.drawImage(QPoint(glyphLst.at(i).rc.x(), glyphLst.at(i).rc.y()), glyphLst.at(i).img);
-
+                    p.drawImage(QPoint(glyphLst.at(i).rc.x(), glyphLst.at(i).rc.y()), glyphLst.at(i).img);                   
+        p.end();
+        // apply distance field calculations if selected
+        if(distanceField)
+        {
+            QImage scaled = texture.scaled(texture.size() * 8, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+            dfcalculate(&scaled, 8, exporting && ui->transparent->isEnabled() && ui->transparent->isChecked());
+            QImage texture1 = (scaled.scaled(texture.size()));
+            texture = texture1;
+        }
         if (ui->transparent->isEnabled() && ui->transparent->isChecked())
         {
-            if (0 == ui->bitDepth->currentIndex()) // 8 bit alpha image
-                texture.convertToFormat(QImage::Format_Indexed8, Qt::DiffuseAlphaDither | Qt::PreferDither);
+            if (0 == ui->bitDepth->currentIndex())
+                texture = texture.convertToFormat(QImage::Format_Indexed8, Qt::ThresholdAlphaDither | Qt::PreferDither);
         }
         else
         {
-            if (0 == ui->bitDepth->currentIndex()) // 8 bit
-                texture.convertToFormat(QImage::Format_Indexed8, Qt::ThresholdAlphaDither |Qt::PreferDither);
-            else  // 24 bit image
-                texture.convertToFormat(QImage::Format_RGB888, Qt::ThresholdAlphaDither | Qt::PreferDither);
+            if (0 == ui->bitDepth->currentIndex()) // 8 bit alpha image
+                texture = texture.convertToFormat(QImage::Format_Indexed8, Qt::ThresholdAlphaDither | Qt::ThresholdDither);
+            else // 24 bit image
+                texture = texture.convertToFormat(QImage::Format_RGB888, Qt::ThresholdAlphaDither | Qt::PreferDither);
         }
         bool result;
         // output files
@@ -346,9 +364,12 @@ void FontRender::run()
     }
     else
     {
+        // draw glyhps
+        p.begin(&texture);
         for (i = 0; i < glyphLst.size(); i++)
             p.drawImage(QPoint(glyphLst.at(i).rc.x(), glyphLst.at(i).rc.y()), glyphLst.at(i).img);
 
+        p.end();  // end of drawing glyphs
         int percent = (int)(((float)packer.area / (float)width / (float)height) * 100.0f + 0.5f);
         float percent2 = (float)(((float)packer.neededArea / (float)width / (float)height) * 100.0f );
         ui->preview->setText(QString("Preview: ") +
@@ -357,10 +378,18 @@ void FontRender::run()
                              QString::number(packer.mergedChars) + QString(" chars merged, needed area: ") +
                              QString::number(percent2) + QString("%."));
         if(packer.missingChars == 0) done = true;
-        emit renderedImage(texture);
+        // apply distance field calculations if selected
+        if(distanceField)
+        {
+            QImage scaled = texture.scaled(texture.size()*8, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+            dfcalculate(&scaled, 8, exporting && ui->transparent->isEnabled() && ui->transparent->isChecked());
+            emit renderedImage(scaled.scaled(texture.size()));
+        } else {
+            emit renderedImage(texture);
+        }
     }
-    // int nMilliseconds = myTimer.elapsed();
-    // qDebug() << nMilliseconds;
+    int nMilliseconds = myTimer.elapsed();
+    qDebug() << nMilliseconds;
 }
 
 unsigned int FontRender::qchar2ui(QChar ch)
