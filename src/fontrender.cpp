@@ -211,9 +211,7 @@ void FontRender::run()
         baseTxtrFormat = QImage::Format_RGB32;
         glyphTxtrFormat= QImage::Format_ARGB32_Premultiplied;
     }
-    int distanceFieldScale = 4;
-    if(exporting)
-        distanceFieldScale *= 4;
+    int distanceFieldScale = 16;
     if(!distanceField)
         distanceFieldScale = 1;
     for(k = 0; k < ui->listOfFonts->count(); k++)
